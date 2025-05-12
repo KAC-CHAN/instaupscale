@@ -16,7 +16,7 @@ app = Client("insta_reel_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_t
 async def reel_handler(client, message):
     url = message.text.strip()
     # Basic check for Instagram reel URL
-    if "instagram.com/reel/" not in url:
+    if "www.instagram.com/" not in url:
         return  # ignore non-reel messages
 
     await message.reply("Processing your reel...")
