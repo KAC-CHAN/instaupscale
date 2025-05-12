@@ -2,9 +2,10 @@
 import os
 import tempfile
 import subprocess
-import requests
-import shutil  # for cross-device file moves
 import logging
+import shutil
+import cv2
+import numpy as np
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from yt_dlp import YoutubeDL
@@ -18,8 +19,6 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 TELEGRAM_TOKEN = "7259559804:AAFIqjtqJgC68m9ucmOt9vfbGlM4iiGxwY4"
-HF_API_TOKEN = "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"
-HF_MODEL_URL = 'https://api-inference.huggingface.co/models/ximso/RealESRGAN_x4plus_anime_6B'  # Real-ESRGAN API endpoint
 
 # YT-DLP options for highest-quality Instagram reel
 YDL_OPTS = {
@@ -28,32 +27,50 @@ YDL_OPTS = {
     'merge_output_format': 'mp4'
 }
 
+# Super-resolution model settings
+MODEL_URL = 'https://github.com/opencv/opencv_contrib/raw/master/modules/dnn_superres/testdata/EDSR_x2.pb'
+MODEL_PATH = 'EDSR_x2.pb'
+MODEL_SCALE = 2
+MODEL_NAME = 'edsr'
+
+# Ensure SR model is downloaded
+if not os.path.isfile(MODEL_PATH):
+    import urllib.request
+    logger.info('Downloading super-resolution model...')
+    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+
+# Initialize super-resolution engine
+sr = cv2.dnn_superres.DnnSuperResImpl_create()
+sr.readModel(MODEL_PATH)
+sr.setModel(MODEL_NAME, MODEL_SCALE)
+
 async def download_reel(url: str, target_path: str) -> None:
     '''Download Instagram reel using yt-dlp.'''
     with YoutubeDL(YDL_OPTS) as ydl:
         info = ydl.extract_info(url, download=False)
         filename = ydl.prepare_filename(info)
         ydl.download([url])
-    # Move file across devices
     shutil.move(filename, target_path)
 
-async def upscale_frame_hf(image_path: str) -> bytes:
-    '''Upscale a single frame via Hugging Face Real-ESRGAN inference API.'''
-    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
-    with open(image_path, 'rb') as f:
-        response = requests.post(HF_MODEL_URL, headers=headers, files={"inputs": f})
-    response.raise_for_status()
-    return response.content
+def upscale_frame_local(image_path: str) -> bytes:
+    '''Upscale a single frame locally using OpenCV DNN SuperRes.'''
+    img = cv2.imread(image_path)
+    result = sr.upsample(img)
+    # encode back to PNG
+    success, encoded = cv2.imencode('.png', result)
+    if not success:
+        raise RuntimeError('Failed to encode upscaled frame')
+    return encoded.tobytes()
 
 async def process_video(input_path: str, output_path: str, watermark: str = 'desi gadgets') -> None:
-    '''Extract frames, upscale via HF API, reassemble, and watermark.'''
+    '''Extract frames, upscale locally, reassemble, and watermark.'''
     with tempfile.TemporaryDirectory() as tmpdir:
         frames_dir = os.path.join(tmpdir, 'frames')
         up_dir = os.path.join(tmpdir, 'up')
         os.makedirs(frames_dir, exist_ok=True)
         os.makedirs(up_dir, exist_ok=True)
 
-        # Extract FPS
+        # Get FPS
         fps_str = subprocess.check_output([
             'ffprobe', '-v', 'error', '-select_streams', 'v:0',
             '-show_entries', 'stream=r_frame_rate',
@@ -69,10 +86,10 @@ async def process_video(input_path: str, output_path: str, watermark: str = 'des
 
         # Upscale each frame
         for fname in sorted(os.listdir(frames_dir)):
-            full_src = os.path.join(frames_dir, fname)
-            up_data = await upscale_frame_hf(full_src)
-            with open(os.path.join(up_dir, fname), 'wb') as fout:
-                fout.write(up_data)
+            src = os.path.join(frames_dir, fname)
+            data = upscale_frame_local(src)
+            with open(os.path.join(up_dir, fname), 'wb') as f:
+                f.write(data)
 
         # Reassemble video
         temp_video = os.path.join(tmpdir, 'upscaled.mp4')
@@ -100,7 +117,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         out_vid = os.path.join(tmpdir, 'output.mp4')
         try:
             await download_reel(msg, in_vid)
-            await update.message.reply_text('Upscaling video (may take a while)...')
+            await update.message.reply_text('Upscaling video (CPU-only, may take some time)...')
             await process_video(in_vid, out_vid)
             with open(out_vid, 'rb') as f:
                 await update.message.reply_video(f)
@@ -110,10 +127,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # Entry point
 if __name__ == '__main__':
-    if not TELEGRAM_TOKEN or not HF_API_TOKEN:
-        logger.error('Missing TELEGRAM_TOKEN or HF_API_TOKEN.')
+    if not TELEGRAM_TOKEN:
+        logger.error('Missing TELEGRAM_TOKEN.')
         exit(1)
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    # Synchronous run to avoid event-loop conflicts
     app.run_polling()
