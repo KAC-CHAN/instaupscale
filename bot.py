@@ -16,7 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-TELEGRAM_TOKEN = "7259559804:AAG3VoiBqnwn8_5BlK51U1UMvccj3urRIdk"
+TELEGRAM_TOKEN = "7259559804:AAFIqjtqJgC68m9ucmOt9vfbGlM4iiGxwY4"
 HF_API_TOKEN = "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"
 HF_MODEL_URL = 'https://api-inference.huggingface.co/models/xinntao/Real-ESRGAN'  # Real-ESRGAN API endpoint
 
