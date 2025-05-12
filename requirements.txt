@@ -1,5 +1,5 @@
-Python-Telegram-Bot==13.14
+Python-Telegram-Bot == 13.14
 youtube_dl==2021.12.17
 Realrgan
 numpy>=1.19.0
-tqdm>=4.60.0
+tqdm> = 4.60.0
