@@ -1,6 +1,6 @@
 python-telegram-bot
 yt-dlp
 moviepy
-numpy==1.24.4
+numpy
 chainer
 waifu2x
