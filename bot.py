@@ -1,82 +1,68 @@
 
 import os
-import tempfile
-import subprocess
-import logging
-import requests
-import replicate
-from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
-from yt_dlp import YoutubeDL
+import uuid
+import asyncio
+import instaloader
+from pyrogram import Client, filters
+from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# === Your Telegram Bot API credentials ===
+API_ID = 26788480       # Replace with your API ID
+API_HASH = "858d65155253af8632221240c535c314"
+BOT_TOKEN = "7259559804:AAFIqjtqJgC68m9ucmOt9vfbGlM4iiGxwY4"
 
-TELEGRAM_TOKEN = "7259559804:AAFIqjtqJgC68m9ucmOt9vfbGlM4iiGxwY4"
-REPLICATE_API_TOKEN  = "r8_4KvDvivCWUDGU4BY3OykD60uFew2jAG3kso9T"
-YDL_OPTS = {
-    "format": "bestvideo+bestaudio/best",
-    "outtmpl": "%(id)s.%(ext)s",
-    "merge_output_format": "mp4",
-}
+# === Pyrogram Bot Setup ===
+app = Client("insta_reel_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Initialize Replicate client
-rep_client = replicate.Client(api_token=REPLICATE_API_TOKEN)
-# Model on Replicate: Real-ESRGAN for video
-MODEL = "twhui/Real-ESRGAN-video:latest"
+# === Function to download Instagram Reel ===
+def download_instagram_reel(url: str, output_dir: str) -> str:
+    loader = instaloader.Instaloader(dirname_pattern=output_dir, save_metadata=False, post_metadata_txt_pattern='')
+    shortcode = url.split("/")[-2]  # e.g., 'CwQkfe1LXrO'
+    post = instaloader.Post.from_shortcode(loader.context, shortcode)
+    loader.download_post(post, target="reel")
 
-async def download_reel(url, target):
-    with YoutubeDL(YDL_OPTS) as ydl:
-        info = ydl.extract_info(url, download=False)
-        fn = ydl.prepare_filename(info)
-        ydl.download([url])
-    os.replace(fn, target)
+    # Find the downloaded mp4
+    for file in os.listdir(output_dir + "/reel"):
+        if file.endswith(".mp4"):
+            return os.path.join(output_dir, "reel", file)
+    raise Exception("Video not found")
 
-async def upscale_with_replicate(input_path, output_path):
-    # Replicate accepts file uploads via multipart/form-data
-    with open(input_path, "rb") as video_file:
-        logger.info("Uploading video to Replicate…")
-        prediction = rep_client.run(
-            MODEL,
-            input={ "video": video_file },
-            stream=True,          # stream logs
-        )
-        # prediction is a generator of JSON chunks (with logs and finally 'output' key)
-        output_url = None
-        for chunk in prediction:
-            if "output" in chunk:
-                output_url = chunk["output"]
-        if not output_url:
-            raise RuntimeError("Replicate did not return an output URL")
-        # download the upscaled result
-        r = requests.get(output_url, stream=True)
-        r.raise_for_status()
-        with open(output_path, "wb") as f:
-            for buf in r.iter_content(8_192):
-                f.write(buf)
+# === Function to add watermark ===
+def add_watermark(video_path: str, output_path: str):
+    clip = VideoFileClip(video_path)
+    txt = TextClip("desi gadgets", fontsize=40, color='white', font="Arial-Bold")
+    txt = txt.set_position(("center", "bottom")).set_duration(clip.duration)
+    video = CompositeVideoClip([clip, txt])
+    video.write_videofile(output_path, codec="libx264", audio_codec="aac")
+    clip.close()
 
-async def handle_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text.strip()
-    if "instagram.com" not in url:
-        return await update.message.reply_text("Please send a valid Instagram Reel link.")
-    await update.message.reply_text("Downloading reel…")
-    with tempfile.TemporaryDirectory() as tmp:
-        in_vid  = os.path.join(tmp, "in.mp4")
-        out_vid = os.path.join(tmp, "out.mp4")
-        try:
-            await download_reel(url, in_vid)
-            await update.message.reply_text("Upscaling (via Replicate)…")
-            await upscale_with_replicate(in_vid, out_vid)
-            with open(out_vid, "rb") as v:
-                await update.message.reply_video(v, caption="Here’s your upscaled reel! 💥")
-        except Exception as e:
-            logger.error("Error: %s", e)
-            await update.message.reply_text(f"Something went wrong: {e}")
+# === Telegram Handler ===
+@app.on_message(filters.private & filters.text)
+async def reel_handler(client, message):
+    url = message.text.strip()
+    if "instagram.com/reel/" not in url:
+        await message.reply("❌ Please send a valid Instagram Reel URL.")
+        return
+
+    temp_dir = "downloads"
+    os.makedirs(temp_dir, exist_ok=True)
+
+    try:
+        await message.reply("⬇️ Downloading the reel... Please wait.")
+        downloaded_path = download_instagram_reel(url, temp_dir)
+        watermarked_path = os.path.join(temp_dir, f"watermarked_{uuid.uuid4().hex}.mp4")
+
+        await message.reply("🖊️ Adding watermark...")
+        add_watermark(downloaded_path, watermarked_path)
+
+        await message.reply_video(watermarked_path, caption="✅ Here is your watermarked reel.")
+    except Exception as e:
+        await message.reply(f"⚠️ Error: {e}")
+    finally:
+        # Clean up
+        for root, _, files in os.walk(temp_dir):
+            for file in files:
+                os.remove(os.path.join(root, file))
 
 if __name__ == "__main__":
-    if not TELEGRAM_TOKEN or not REPLICATE_API_TOKEN:
-        logger.error("Set TELEGRAM_TOKEN and REPLICATE_API_TOKEN env vars.")
-        exit(1)
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.run_polling()
+    app.run()
