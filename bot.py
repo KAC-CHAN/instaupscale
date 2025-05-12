@@ -1,66 +1,86 @@
 
-from pyrogram import Client, filters
-import instaloader
-import requests
-import subprocess
 import os
+import re
+import requests
+from pyrogram import Client, filters
+from bs4 import BeautifulSoup
 
-# Telegram API credentials (replace with your values)
-api_id = 26788480       # Your Telegram API ID
-api_hash = "858d65155253af8632221240c535c314"  # Your API Hash
-bot_token = "7259559804:AAFIqjtqJgC68m9ucmOt9vfbGlM4iiGxwY4"  # Your Bot Token
+# Initialize bot
+app = Client(
+    "instagram_reel_bot",
+    bot_token="7259559804:AAFIqjtqJgC68m9ucmOt9vfbGlM4iiGxwY4",
+    api_id=26788480,
+    api_hash="858d65155253af8632221240c535c314"
+)
 
-app = Client("insta_reel_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
+# Regex pattern for Instagram Reel/POST URLs
+INSTAGRAM_REGEX = r"(https?://)?(www\.)?instagram\.com/(reel|p)/([a-zA-Z0-9_-]+)/?.*"
 
-@app.on_message(filters.text & filters.private)
-async def reel_handler(client, message):
-    url = message.text.strip()
-    # Basic check for Instagram reel URL
-    if "www.instagram.com/" not in url:
-        return  # ignore non-reel messages
+def extract_shortcode(url: str) -> str | None:
+    """Extract Instagram shortcode from URL"""
+    match = re.search(INSTAGRAM_REGEX, url)
+    return match.group(4) if match else None
 
-    await message.reply("Processing your reel...")
-
+def get_video_url(shortcode: str) -> str | None:
+    """Get video URL from Instagram using Open Graph metadata"""
+    url = f"https://www.instagram.com/reel/{shortcode}/"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
+    }
+    
     try:
-        # Extract shortcode from URL
-        shortcode = url.split("/reel/")[1].split("/")[0]
-        # Use Instaloader to get the Post object (public reels only)
-        L = instaloader.Instaloader()
-        post = instaloader.Post.from_shortcode(L.context, shortcode)
-        video_url = post.video_url or post.url  # direct video URL
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, "html.parser")
+        video_tag = soup.find("meta", property="og:video")
+        
+        return video_tag["content"] if video_tag else None
+    except Exception as e:
+        print(f"Error fetching video URL: {e}")
+        return None
 
-        # Download video to local file
-        input_path = f"{shortcode}_input.mp4"
-        output_path = f"{shortcode}_watermarked.mp4"
+@app.on_message(filters.regex(INSTAGRAM_REGEX))
+async def handle_reel(client, message):
+    """Handle incoming Instagram URLs"""
+    try:
+        url = message.text
+        shortcode = extract_shortcode(url)
+        
+        if not shortcode:
+            await message.reply_text("❌ Invalid Instagram URL")
+            return
+
+        await message.reply_chat_action("upload_video")
+        
+        video_url = get_video_url(shortcode)
+        if not video_url:
+            await message.reply_text("❌ Could not fetch video URL")
+            return
+
+        # Download video
+        temp_file = f"{shortcode}.mp4"
         with requests.get(video_url, stream=True) as r:
             r.raise_for_status()
-            with open(input_path, "wb") as f:
+            with open(temp_file, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
 
-        # Add watermark using FFmpeg drawtext filter:contentReference[oaicite:5]{index=5}:
-        # watermark text "desi gadgets", white font, black shadow, centered bottom
-        ffmpeg_cmd = [
-            "ffmpeg", "-y", "-i", input_path,
-            "-vf",
-            "drawtext=text='desi gadgets':fontcolor=white:fontsize=24:shadowcolor=black:shadowx=2:shadowy=2:"
-            "x=(w-text_w)/2:y=h-text_h-10",
-            "-c:a", "copy", output_path
-        ]
-        subprocess.run(ffmpeg_cmd, check=True)
+        # Send video to user
+        await message.reply_video(
+            temp_file,
+            caption="📥 Downloaded via Instagram Reel Bot",
+            supports_streaming=True
+        )
 
-        # Send the watermarked video back
-        await app.send_video(message.chat.id, output_path)
-
+        # Cleanup
+        os.remove(temp_file)
+        
     except Exception as e:
-        await message.reply(f"Failed to process reel: {e}")
-
+        await message.reply_text(f"⚠️ Error: {str(e)}")
     finally:
-        # Cleanup files
-        for file in [input_path, output_path]:
-            if os.path.exists(file):
-                os.remove(file)
+        await message.reply_chat_action("cancel")
 
 if __name__ == "__main__":
-    print("Bot is running...")
+    print("Bot started...")
     app.run()
