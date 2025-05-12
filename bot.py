@@ -1,4 +1,5 @@
 
+
 import os
 import re
 import requests
@@ -59,26 +60,27 @@ async def handle_reel(client, message):
             return
 
         # Download video
-        temp_file = f"{shortcode}.mp4"
+        temp_file = f"temp_{shortcode}.mp4"
         with requests.get(video_url, stream=True) as r:
             r.raise_for_status()
             with open(temp_file, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
+                    if chunk:
+                        f.write(chunk)
 
         # Send video to user
         await message.reply_video(
-            temp_file,
+            video=temp_file,
             caption="📥 Downloaded via Instagram Reel Bot",
             supports_streaming=True
         )
 
-        # Cleanup
-        os.remove(temp_file)
-        
     except Exception as e:
         await message.reply_text(f"⚠️ Error: {str(e)}")
     finally:
+        # Cleanup
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
         await message.reply_chat_action("cancel")
 
 if __name__ == "__main__":
