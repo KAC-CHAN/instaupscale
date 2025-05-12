@@ -30,18 +30,27 @@ YDL_OPTS = {
 
 # Super-resolution model settings
 # Using OpenCV DNN SuperRes EDSR x2 (free, CPU-based)
-MODEL_URL = 'https://github.com/opencv/opencv_contrib/raw/4.7.0/modules/dnn_superres/testdata/EDSR_x2.pb'
+MODEL_URLS = [
+    'https://raw.githubusercontent.com/opencv/opencv_contrib/master/modules/dnn_superres/testdata/EDSR_x2.pb',
+    'https://raw.githubusercontent.com/opencv/opencv_contrib/4.7.0/modules/dnn_superres/testdata/EDSR_x2.pb'
+]
 MODEL_PATH = 'EDSR_x2.pb'
 MODEL_SCALE = 2
 MODEL_NAME = 'edsr'
 
 # Download SR model if missing
 if not os.path.isfile(MODEL_PATH):
-    try:
-        logger.info('Downloading super-resolution model...')
-        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-    except Exception as e:
-        logger.error('Failed to download model: %s', e)
+    downloaded = False
+    for url in MODEL_URLS:
+        try:
+            logger.info(f'Downloading SR model from {url}...')
+            urllib.request.urlretrieve(url, MODEL_PATH)
+            downloaded = True
+            break
+        except Exception as e:
+            logger.warning(f'Failed to download from {url}: {e}')
+    if not downloaded:
+        logger.error('All attempts to fetch the SR model failed.')
         raise RuntimeError('Could not fetch the super-resolution model.')
 
 # Initialize SuperRes engine
