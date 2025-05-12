@@ -3,13 +3,10 @@ import os
 import tempfile
 import subprocess
 import logging
-import shutil
-import urllib.request
-import cv2
-import numpy as np
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from yt_dlp import YoutubeDL
+import shutil
 
 # Enable logging
 logging.basicConfig(
@@ -28,36 +25,6 @@ YDL_OPTS = {
     'merge_output_format': 'mp4'
 }
 
-# Super-resolution model settings
-# Using OpenCV DNN SuperRes EDSR x2 (free, CPU-based)
-MODEL_URLS = [
-    'https://raw.githubusercontent.com/opencv/opencv_contrib/master/modules/dnn_superres/testdata/EDSR_x2.pb',
-    'https://raw.githubusercontent.com/opencv/opencv_contrib/4.7.0/modules/dnn_superres/testdata/EDSR_x2.pb'
-]
-MODEL_PATH = 'EDSR_x2.pb'
-MODEL_SCALE = 2
-MODEL_NAME = 'edsr'
-
-# Download SR model if missing
-if not os.path.isfile(MODEL_PATH):
-    downloaded = False
-    for url in MODEL_URLS:
-        try:
-            logger.info(f'Downloading SR model from {url}...')
-            urllib.request.urlretrieve(url, MODEL_PATH)
-            downloaded = True
-            break
-        except Exception as e:
-            logger.warning(f'Failed to download from {url}: {e}')
-    if not downloaded:
-        logger.error('All attempts to fetch the SR model failed.')
-        raise RuntimeError('Could not fetch the super-resolution model.')
-
-# Initialize SuperRes engine
-sr = cv2.dnn_superres.DnnSuperResImpl_create()
-sr.readModel(MODEL_PATH)
-sr.setModel(MODEL_NAME, MODEL_SCALE)
-
 async def download_reel(url: str, target_path: str) -> None:
     '''Download Instagram reel using yt-dlp.'''
     with YoutubeDL(YDL_OPTS) as ydl:
@@ -66,53 +33,19 @@ async def download_reel(url: str, target_path: str) -> None:
         ydl.download([url])
     shutil.move(filename, target_path)
 
-def upscale_frame_local(image_path: str) -> bytes:
-    '''Upscale a single frame using OpenCV DNN SuperRes.'''
-    img = cv2.imread(image_path)
-    result = sr.upsample(img)
-    success, encoded = cv2.imencode('.png', result)
-    if not success:
-        raise RuntimeError('Failed to encode upscaled frame')
-    return encoded.tobytes()
-
 async def process_video(input_path: str, output_path: str, watermark: str = 'desi gadgets') -> None:
-    '''Extract frames, upscale locally, reassemble, and watermark.'''
-    with tempfile.TemporaryDirectory() as tmpdir:
-        frames_dir = os.path.join(tmpdir, 'frames')
-        up_dir = os.path.join(tmpdir, 'up')
-        os.makedirs(frames_dir, exist_ok=True)
-        os.makedirs(up_dir, exist_ok=True)
-
-        fps_str = subprocess.check_output([
-            'ffprobe', '-v', 'error', '-select_streams', 'v:0',
-            '-show_entries', 'stream=r_frame_rate',
-            '-of', 'default=nokey=1:noprint_wrappers=1', input_path
-        ]).decode().strip()
-        fps = eval(fps_str)
-
-        subprocess.check_call([
-            'ffmpeg', '-i', input_path,
-            os.path.join(frames_dir, 'frame_%05d.png')
-        ])
-
-        for fname in sorted(os.listdir(frames_dir)):
-            src = os.path.join(frames_dir, fname)
-            data = upscale_frame_local(src)
-            with open(os.path.join(up_dir, fname), 'wb') as f:
-                f.write(data)
-
-        temp_video = os.path.join(tmpdir, 'upscaled.mp4')
-        subprocess.check_call([
-            'ffmpeg', '-framerate', str(fps),
-            '-i', os.path.join(up_dir, 'frame_%05d.png'),
-            '-c:v', 'libx264', '-pix_fmt', 'yuv420p', temp_video
-        ])
-
-        subprocess.check_call([
-            'ffmpeg', '-i', temp_video,
-            '-vf', f"drawtext=text='{watermark}':fontcolor=white@0.8:fontsize=24:x=w-tw-10:y=h-th-10",
-            '-codec:a', 'copy', output_path
-        ])
+    '''Upscale video via FFmpeg Lanczos scaling and add watermark.'''
+    # 2x upscale with high-quality Lanczos filter
+    vf_chain = (
+        'scale=iw*2:ih*2:flags=lanczos,'
+        f"drawtext=text='{watermark}':fontcolor=white@0.8:fontsize=24:x=w-tw-10:y=h-th-10"
+    )
+    subprocess.check_call([
+        'ffmpeg', '-i', input_path,
+        '-vf', vf_chain,
+        '-c:v', 'libx264', '-preset', 'slow', '-crf', '18',
+        '-c:a', 'copy', output_path
+    ])
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.message.text.strip()
@@ -125,7 +58,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         out_vid = os.path.join(tmpdir, 'output.mp4')
         try:
             await download_reel(msg, in_vid)
-            await update.message.reply_text('Upscaling video (CPU-only, may take time)...')
+            await update.message.reply_text('Upscaling video (CPU-only, may take a few seconds)...')
             await process_video(in_vid, out_vid)
             with open(out_vid, 'rb') as f:
                 await update.message.reply_video(f)
