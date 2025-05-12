@@ -43,7 +43,7 @@ async def process_video(input_path: str, output_path: str, watermark: str = 'des
     subprocess.check_call([
         'ffmpeg', '-i', input_path,
         '-vf', vf_chain,
-        '-c:v', 'libx264', '-preset', 'slow', '-crf', '18',
+        '-c:v', 'libx264', '-preset', 'superfast', '-crf', '23', '-threads', '0',  # faster encode (lower quality)
         '-c:a', 'copy', output_path
     ])
 
