@@ -4,6 +4,7 @@ import tempfile
 import subprocess
 import logging
 import shutil
+import urllib.request
 import cv2
 import numpy as np
 from telegram import Update
@@ -28,18 +29,22 @@ YDL_OPTS = {
 }
 
 # Super-resolution model settings
-MODEL_URL = 'https://github.com/opencv/opencv_contrib/raw/master/modules/dnn_superres/testdata/EDSR_x2.pb'
+# Using OpenCV DNN SuperRes EDSR x2 (free, CPU-based)
+MODEL_URL = 'https://github.com/opencv/opencv_contrib/raw/4.7.0/modules/dnn_superres/testdata/EDSR_x2.pb'
 MODEL_PATH = 'EDSR_x2.pb'
 MODEL_SCALE = 2
 MODEL_NAME = 'edsr'
 
-# Ensure SR model is downloaded
+# Download SR model if missing
 if not os.path.isfile(MODEL_PATH):
-    import urllib.request
-    logger.info('Downloading super-resolution model...')
-    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    try:
+        logger.info('Downloading super-resolution model...')
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    except Exception as e:
+        logger.error('Failed to download model: %s', e)
+        raise RuntimeError('Could not fetch the super-resolution model.')
 
-# Initialize super-resolution engine
+# Initialize SuperRes engine
 sr = cv2.dnn_superres.DnnSuperResImpl_create()
 sr.readModel(MODEL_PATH)
 sr.setModel(MODEL_NAME, MODEL_SCALE)
@@ -53,10 +58,9 @@ async def download_reel(url: str, target_path: str) -> None:
     shutil.move(filename, target_path)
 
 def upscale_frame_local(image_path: str) -> bytes:
-    '''Upscale a single frame locally using OpenCV DNN SuperRes.'''
+    '''Upscale a single frame using OpenCV DNN SuperRes.'''
     img = cv2.imread(image_path)
     result = sr.upsample(img)
-    # encode back to PNG
     success, encoded = cv2.imencode('.png', result)
     if not success:
         raise RuntimeError('Failed to encode upscaled frame')
@@ -70,7 +74,6 @@ async def process_video(input_path: str, output_path: str, watermark: str = 'des
         os.makedirs(frames_dir, exist_ok=True)
         os.makedirs(up_dir, exist_ok=True)
 
-        # Get FPS
         fps_str = subprocess.check_output([
             'ffprobe', '-v', 'error', '-select_streams', 'v:0',
             '-show_entries', 'stream=r_frame_rate',
@@ -78,20 +81,17 @@ async def process_video(input_path: str, output_path: str, watermark: str = 'des
         ]).decode().strip()
         fps = eval(fps_str)
 
-        # Extract frames
         subprocess.check_call([
             'ffmpeg', '-i', input_path,
             os.path.join(frames_dir, 'frame_%05d.png')
         ])
 
-        # Upscale each frame
         for fname in sorted(os.listdir(frames_dir)):
             src = os.path.join(frames_dir, fname)
             data = upscale_frame_local(src)
             with open(os.path.join(up_dir, fname), 'wb') as f:
                 f.write(data)
 
-        # Reassemble video
         temp_video = os.path.join(tmpdir, 'upscaled.mp4')
         subprocess.check_call([
             'ffmpeg', '-framerate', str(fps),
@@ -99,7 +99,6 @@ async def process_video(input_path: str, output_path: str, watermark: str = 'des
             '-c:v', 'libx264', '-pix_fmt', 'yuv420p', temp_video
         ])
 
-        # Watermark
         subprocess.check_call([
             'ffmpeg', '-i', temp_video,
             '-vf', f"drawtext=text='{watermark}':fontcolor=white@0.8:fontsize=24:x=w-tw-10:y=h-th-10",
@@ -117,7 +116,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         out_vid = os.path.join(tmpdir, 'output.mp4')
         try:
             await download_reel(msg, in_vid)
-            await update.message.reply_text('Upscaling video (CPU-only, may take some time)...')
+            await update.message.reply_text('Upscaling video (CPU-only, may take time)...')
             await process_video(in_vid, out_vid)
             with open(out_vid, 'rb') as f:
                 await update.message.reply_video(f)
@@ -125,7 +124,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.error('Processing error: %s', e)
             await update.message.reply_text(f'Something went wrong: {e}')
 
-# Entry point
 if __name__ == '__main__':
     if not TELEGRAM_TOKEN:
         logger.error('Missing TELEGRAM_TOKEN.')
