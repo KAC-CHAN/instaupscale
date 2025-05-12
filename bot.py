@@ -1,10 +1,9 @@
 
-
-
 import os
 import tempfile
 import subprocess
 import requests
+import shutil  # for cross-device file moves
 import logging
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
@@ -35,7 +34,8 @@ async def download_reel(url: str, target_path: str) -> None:
         info = ydl.extract_info(url, download=False)
         filename = ydl.prepare_filename(info)
         ydl.download([url])
-    os.rename(filename, target_path)
+    # Move file across devices
+    shutil.move(filename, target_path)
 
 async def upscale_frame_hf(image_path: str) -> bytes:
     '''Upscale a single frame via Hugging Face Real-ESRGAN inference API.'''
