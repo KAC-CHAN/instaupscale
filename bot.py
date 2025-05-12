@@ -15,8 +15,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Environment variables
-TELEGRAM_TOKEN = os.environ.get('7259559804:AAG3VoiBqnwn8_5BlK51U1UMvccj3urRIdk')
-HF_API_TOKEN = os.environ.get('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')
+TELEGRAM_TOKEN = "7259559804:AAG3VoiBqnwn8_5BlK51U1UMvccj3urRIdk"
+HF_API_TOKEN = "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"
 if not TELEGRAM_TOKEN or not HF_API_TOKEN:
     raise RuntimeError("Please set both TELEGRAM_TOKEN and HF_API_TOKEN as environment variables.")
 
