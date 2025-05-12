@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 TELEGRAM_TOKEN = "7259559804:AAFIqjtqJgC68m9ucmOt9vfbGlM4iiGxwY4"
 HF_API_TOKEN = "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"
-HF_MODEL_URL = 'https://api-inference.huggingface.co/models/xinntao/Real-ESRGAN'  # Real-ESRGAN API endpoint
+HF_MODEL_URL = 'https://api-inference.huggingface.co/models/ximso/RealESRGAN_x4plus_anime_6B'  # Real-ESRGAN API endpoint
 
 # YT-DLP options for highest-quality Instagram reel
 YDL_OPTS = {
