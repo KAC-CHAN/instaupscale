@@ -1,140 +1,116 @@
 import os
-import logging
 import tempfile
 import subprocess
 import requests
 from telegram import Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
-import youtube_dl
+from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
+from yt_dlp import YoutubeDL
 
-# Configure logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# Environment variables
+# Configuration
 TELEGRAM_TOKEN = "7259559804:AAG3VoiBqnwn8_5BlK51U1UMvccj3urRIdk"
 HF_API_TOKEN = "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"
-if not TELEGRAM_TOKEN or not HF_API_TOKEN:
-    raise RuntimeError("Please set both TELEGRAM_TOKEN and HF_API_TOKEN as environment variables.")
+HF_MODEL = 'https://api-inference.huggingface.co/models/xinntao/Real-ESRGAN'  # Real-ESRGAN model endpoint
 
-# Hugging Face model for super-resolution
-HF_MODEL = 'xinntao/Real-ESRGAN_x4plus'
-HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
-HEADERS = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+# YT-DLP options for highest quality Instagram reel
+YDL_OPTS = {
+    'format': 'bestvideo+bestaudio/best',
+    'outtmpl': '%(id)s.%(ext)s',
+    'merge_output_format': 'mp4'
+}
 
-# Download Instagram Reel using youtube_dl
 
-def download_reel(url: str, output_path: str) -> str:
-    ydl_opts = {
-        'format': 'bestvideo+bestaudio/best',
-        'outtmpl': output_path,
-        'merge_output_format': 'mp4',
-        'quiet': True,
-    }
-    with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
+def download_reel(url: str, target_path: str) -> None:
+    """
+    Download Instagram reel using yt-dlp.
+    """
+    with YoutubeDL(YDL_OPTS) as ydl:
+        info = ydl.extract_info(url, download=False)
         filename = ydl.prepare_filename(info)
-        if not filename.lower().endswith('.mp4'):
-            filename = os.path.splitext(filename)[0] + '.mp4'
-        return filename
+        ydl.download([url])
+    os.rename(filename, target_path)
 
-# Upscale video by sending frames to Hugging Face API
 
-def upscale_video(input_path: str, output_path: str, framerate: int = 30) -> str:
+def upscale_frame_hf(image_path: str) -> bytes:
+    """
+    Upscale a single frame via Hugging Face Real-ESRGAN inference API.
+    Returns raw image bytes.
+    """
+    headers = {"Authorization": f"Bearer {HF_API_TOKEN}"}
+    with open(image_path, 'rb') as f:
+        response = requests.post(HF_MODEL, headers=headers, files={"inputs": f})
+    response.raise_for_status()
+    return response.content
+
+
+def process_video(input_path: str, output_path: str, watermark: str = 'desi gadgets') -> None:
+    """
+    Extract frames, upscale via HF API, reassemble, and watermark.
+    """
     with tempfile.TemporaryDirectory() as tmpdir:
+        frames_dir = os.path.join(tmpdir, 'frames')
+        up_dir = os.path.join(tmpdir, 'up')
+        os.makedirs(frames_dir)
+        os.makedirs(up_dir)
         # Extract frames
-        frame_pattern = os.path.join(tmpdir, 'frame_%06d.png')
-        subprocess.run([
+        fps_str = subprocess.check_output([
+            'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+            '-show_entries', 'stream=r_frame_rate', '-of', 'default=nokey=1:noprint_wrappers=1',
+            input_path
+        ]).decode().strip()
+        fps = eval(fps_str)
+        subprocess.check_call([
             'ffmpeg', '-i', input_path,
-            frame_pattern
-        ], check=True)
-
-        # List extracted frames
-        frames = sorted([f for f in os.listdir(tmpdir)
-                         if f.startswith('frame_') and f.endswith('.png')])
-
+            os.path.join(frames_dir, 'frame_%05d.png')
+        ])
         # Upscale each frame
-        for frame in frames:
-            frame_path = os.path.join(tmpdir, frame)
-            with open(frame_path, 'rb') as img_file:
-                response = requests.post(HF_API_URL, headers=HEADERS, data=img_file)
-            if response.status_code != 200:
-                raise RuntimeError(
-                    f"Frame upscale failed: {response.status_code} {response.text}")
-            with open(frame_path, 'wb') as out_file:
-                out_file.write(response.content)
-
+        for fname in sorted(os.listdir(frames_dir)):
+            src = os.path.join(frames_dir, fname)
+            data = upscale_frame_hf(src)
+            with open(os.path.join(up_dir, fname), 'wb') as fout:
+                fout.write(data)
         # Reassemble video
-        subprocess.run([
-            'ffmpeg', '-framerate', str(framerate),
-            '-i', os.path.join(tmpdir, 'frame_%06d.png'),
-            '-c:v', 'libx264', '-pix_fmt', 'yuv420p', output_path
-        ], check=True)
-    return output_path
-
-# Add watermark using FFmpeg
-
-def add_watermark(input_path: str, output_path: str, text: str) -> str:
-    cmd = [
-        'ffmpeg', '-i', input_path,
-        '-vf', f"drawtext=text='{text}':fontcolor=white:fontsize=24:x=w-tw-10:y=h-th-10",
-        '-codec:a', 'copy', output_path
-    ]
-    subprocess.run(cmd, check=True)
-    return output_path
-
-# Telegram bot handlers
-
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text(
-        'Send me an Instagram Reel URL. I will download it, upscale (4× via HF API), watermark, and return it.'
-    )
+        intermediate = os.path.join(tmpdir, 'upscaled.mp4')
+        subprocess.check_call([
+            'ffmpeg', '-framerate', str(fps), '-i',
+            os.path.join(up_dir, 'frame_%05d.png'), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', intermediate
+        ])
+        # Watermark
+        subprocess.check_call([
+            'ffmpeg', '-i', intermediate,
+            '-vf', f"drawtext=text='{watermark}':fontcolor=white@0.8:fontsize=24:x=w-tw-10:y=h-th-10",
+            '-codec:a', 'copy', output_path
+        ])
 
 
-def handle_message(update: Update, context: CallbackContext):
-    url = update.message.text.strip()
-    if 'instagram.com' not in url:
-        update.message.reply_text('Please send a valid Instagram Reel URL.')
+def handle_message(update: Update, context: CallbackContext) -> None:
+    msg = update.message.text.strip()
+    if 'instagram.com' not in msg:
+        update.message.reply_text('Please send a valid Instagram Reel link.')
         return
-
-    status_msg = update.message.reply_text('Downloading reel...')
+    update.message.reply_text('Downloading your reel...')
     with tempfile.TemporaryDirectory() as tmpdir:
+        in_path = os.path.join(tmpdir, 'input.mp4')
+        out_path = os.path.join(tmpdir, 'output.mp4')
         try:
-            # Download
-            orig_path = os.path.join(tmpdir, 'original.mp4')
-            download_reel(url, orig_path)
-
-            # Upscale
-            status_msg.edit_text('Upscaling frames via HF API...')
-            upscaled_path = os.path.join(tmpdir, 'upscaled.mp4')
-            upscale_video(orig_path, upscaled_path)
-
-            # Watermark
-            status_msg.edit_text('Adding watermark...')
-            final_path = os.path.join(tmpdir, 'final.mp4')
-            add_watermark(upscaled_path, final_path, 'desi gadgets')
-
-            # Send back
-            status_msg.edit_text('Uploading enhanced reel...')
-            with open(final_path, 'rb') as video_file:
-                update.message.reply_video(video_file)
-        except Exception as exc:
-            logger.error(f"Processing error: {exc}")
-            update.message.reply_text('Sorry, something went wrong during processing.')
+            download_reel(msg, in_path)
+            update.message.reply_text('Upscaling video (may take a while)...')
+            process_video(in_path, out_path)
+            with open(out_path, 'rb') as vid:
+                update.message.reply_video(vid)
+        except Exception as e:
+            update.message.reply_text(f'Something went wrong: {e}')
 
 
 def main():
+    if not TELEGRAM_TOKEN or not HF_API_TOKEN:
+        print('Error: TELEGRAM_TOKEN and HF_API_TOKEN must be set.')
+        exit(1)
     updater = Updater(TELEGRAM_TOKEN)
-    dispatcher = updater.dispatcher
-    dispatcher.add_handler(CommandHandler('start', start))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-
+    dp = updater.dispatcher
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     updater.start_polling()
     updater.idle()
 
-
 if __name__ == '__main__':
     main()
+```
