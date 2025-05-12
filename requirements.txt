@@ -1,5 +1,5 @@
-python-telegram-bot~=20.6
-yt-dlp>=2024.1.5
-requests>=2.28.0
-pyanime4k
-opencv-python
+python-telegram-bot
+yt-dlp
+waifu2x
+moviepy
+numpy
