@@ -1,5 +1,4 @@
-Python-Telegram-Bot==13.14
-youtube_dl==2021.12.17
-realesrgan
-numpy>=1.19.0
-tqdm>=4.60.0
+
+python-telegram-bot==13.14
+youtube_dl>=2021.12.17
+requests>=2.25.1
